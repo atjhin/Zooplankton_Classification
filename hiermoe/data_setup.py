@@ -6,8 +6,8 @@ import numpy as np
 from torchvision import transforms
 from PIL import Image, UnidentifiedImageError
 from collections import Counter
-from extra_functions import set_seed
-from hierarchy import Hierarchy
+from .extra_functions import set_seed
+from .hierarchy import Hierarchy
 
 import copy
 import torch.nn.functional as F
@@ -176,9 +176,9 @@ class ImageDataset(Dataset):
             print(f'\n{subset_name} Dataset Size: {len(filtered_labels)}')
 
         for class_id, class_name in zip(self.class_ids, self.class_names):
-            class_prop = filtered_counts[class_id] / len(filtered_labels)
+            class_prop = filtered_counts[class_name] / len(filtered_labels)
 
-            print(f'Class Name: {class_name} | Class Label: {class_id} | Count: {filtered_counts[class_id]} ' +
+            print(f'Class Name: {class_name} | Class Label: {class_id} | Count: {filtered_counts[class_name]} ' +
                     f'| Prop: {class_prop:.2f}'
                 )
             
@@ -202,15 +202,17 @@ class ImageDataset(Dataset):
             filtered_labels = self.labels
         else:
             filtered_labels = [self.labels[i] for i in indices]
-
+        # print(f"filtered_labels:{filtered_labels}")
         filtered_counts = dict(Counter(filtered_labels))
-
+        # print(f"filtered_counts:{filtered_counts}")
         for class_id, class_name in zip(self.class_ids, self.class_names):
-            class_prop = filtered_counts[class_id] / len(filtered_labels)
-            
+            try:
+                class_prop = filtered_counts[class_name] / len(filtered_labels)
+            except:
+                print(f"Following class is not found: {class_id}, {class_name}")
             all_class_names.append(class_name)
             all_class_labels.append(class_id)
-            all_counts.append(filtered_counts[class_id])
+            all_counts.append(filtered_counts[class_name])
             all_props.append(class_prop)
             
         data_details ={
