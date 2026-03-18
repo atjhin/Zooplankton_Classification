@@ -1,9 +1,12 @@
+import json
+import random
 import numpy as np
 import torch
-import random
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import matplotlib.ticker as mticker
 import seaborn as sns
+from pathlib import Path
 
 def set_seed(seed: int = 666):
 
@@ -325,7 +328,6 @@ class Visualize:
                             textcoords="offset points", xytext=(5, 3), fontsize=7)
 
         # Legend patches
-        import matplotlib.patches as mpatches
         handles = [mpatches.Patch(color=c, label=f"Level {d}")
                    for c, d in zip(level_colors, sorted(level_results, key=int))]
         ax.legend(handles=handles, fontsize=9)

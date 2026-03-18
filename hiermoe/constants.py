@@ -1,8 +1,9 @@
 ZOOPLANKTON_CLASSES = [
-     'Debris',
+    #  'Debris',
      'Bubbles',
      'Exoskeleton',
      'Fiber_Squiggly',
+     'Fiber_Hairlike',
      'Copepoda',
      'Calanoid',
      'Cyclopoid',
@@ -79,7 +80,7 @@ hier_adjacency_graph = {
     'Rotifer': [],  
     'Bubbles': [],  
     'Exoskeleton': [],  
-    'Fiber': ['Fiber_Hairlike', 'Fiber_Squiggly']
+    'Fiber': ['Fiber_Hairlike', 'Fiber_Squiggly'],
     'Fiber_Squiggly': [],
     'Fiber_Hairlike': [],
     'Cyclopoid': [],  
