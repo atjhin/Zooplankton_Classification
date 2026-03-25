@@ -75,15 +75,16 @@ class Trainer:
         return accuracy, f1
 
 
-    def fit(self, model, train_loader, valid_loader, optimizer=None, patience=15, delta=0.0005):
+    def fit(self, model, train_loader, valid_loader, optimizer=None, scheduler=False, patience=15, delta=0.0005):
         """
         Train the model with early stopping on validation accuracy.
 
         Args:
-            model        : HierMoeNet
+            model        : HierRouteNet
             train_loader : DataLoader for training set
             valid_loader : DataLoader for validation set
             optimizer    : Optional pre-built optimizer; Adam is used if None
+            scheduler    : If True, uses CosineAnnealingLR with T_max=self.max_epochs (default: False)
             patience     : Early stopping patience in epochs (default: 15)
             delta        : Minimum improvement in valid accuracy to count as a new best (default: 0.0005)
 
@@ -94,6 +95,11 @@ class Trainer:
         model.to(self.device)
         if optimizer is None:
             optimizer = torch.optim.Adam(model.parameters(), lr=self.learning_rate)
+
+        if scheduler:
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=self.max_epochs)
+        else:
+            scheduler = None
 
         # --- Output directory with collision safety ---
         actual_dir = None
@@ -197,6 +203,9 @@ class Trainer:
                     f"{saved_flag}"
                 )
 
+            if scheduler is not None:
+                scheduler.step()
+
             if epochs_no_improve >= patience:
                 print(f"\nEarly stopping at epoch {epoch+1} — no improvement for {patience} epochs.")
                 break
@@ -210,6 +219,7 @@ class Trainer:
                     "gradient_clip_val": self.gradient_clip_val,
                     "patience"         : patience,
                     "delta"            : delta,
+                    "scheduler"        : type(scheduler).__name__ if scheduler is not None else None,
                 },
                 "results": {
                     "best_epoch"        : best_epoch,
@@ -238,7 +248,7 @@ class Trainer:
         Run model.predict() over a loader, call evaluate() and count_mismatches(), and return results.
 
         Args:
-            model       : HierMoeNet
+            model       : HierRouteNet
             pred_loader : DataLoader yielding batches with "image" and "label_node" keys
             save        : If True, write predictions.npz and eval_results.json to self.model_dir.
                           predictions.npz includes per-level arrays (level_{d}_preds / trues)
@@ -316,7 +326,7 @@ class Trainer:
         zero-F1 classes that deflate the macro average.
 
         Args:
-            model      : HierMoeNet
+            model      : HierRouteNet
             pred_ids   : LongTensor (N,) — predicted leaf node_ids
             true_ids   : LongTensor (N,) — true leaf node_ids
             pred_paths : list of lists — expert paths from model.predict(), one per sample
@@ -408,7 +418,7 @@ class Trainer:
         Every step in each predicted path must be a valid parent->child edge in the hierarchy.
 
         Args:
-            model      : HierMoeNet
+            model      : HierRouteNet
             pred_paths : list of lists — expert paths from model.predict(), one per sample
 
         Returns:

@@ -60,13 +60,17 @@ class Visualize:
     #  Training curves                                                     #
     # ------------------------------------------------------------------ #
 
-    def plot_train(self):
+    def plot_train(self, max_epochs: int = None):
         """
         Three side-by-side line charts (Loss / Accuracy / F1),
         one line for train (blue) and one for validation (orange).
         Best validation epoch is marked with a vertical dashed line
         and a diamond marker on the validation curve.
         Saves train_metrics.png to model_dir.
+
+        Args:
+            max_epochs: If set, only the first max_epochs epochs are shown.
+                        Defaults to None (show all epochs).
         """
         if self.training_info is None:
             print("training_info.json not found — skipping plot_train.")
@@ -75,6 +79,8 @@ class Visualize:
         m          = self.training_info["training_metrics"]
         best_epoch = self.training_info["results"]["best_epoch"]
         n_epochs   = len(m["train_loss"])
+        if max_epochs is not None:
+            n_epochs = min(n_epochs, max_epochs)
         epochs     = np.arange(1, n_epochs + 1)
 
         metric_cfgs = [
@@ -87,8 +93,8 @@ class Visualize:
         fig.suptitle("Training Metrics per Epoch", fontsize=14, fontweight="bold")
 
         for ax, (title, train_key, val_key) in zip(axes, metric_cfgs):
-            train_vals = np.array(m[train_key])
-            val_vals   = np.array(m[val_key])
+            train_vals = np.array(m[train_key])[:n_epochs]
+            val_vals   = np.array(m[val_key])[:n_epochs]
 
             ax.plot(epochs, train_vals, color=self._TRAIN_COL, linewidth=2,
                     marker="o", markersize=4, label="Train")

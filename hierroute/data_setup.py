@@ -1,6 +1,7 @@
 import os
 import random
 from torch.utils.data import Dataset, Subset, DataLoader, SequentialSampler, WeightedRandomSampler, random_split
+from sklearn.model_selection import train_test_split
 import torch 
 import numpy as np 
 from torchvision import transforms
@@ -228,26 +229,36 @@ class ImageDataset(Dataset):
 
         """
         Returns indices corresponding to the train, validation and test subsets of the Dataset.
+        Uses stratified splitting to ensure minority classes are proportionally represented.
 
         Args:
-            trian_prop (float): Proportion of samples to allocate to the train subset.
+            train_prop (float): Proportion of samples to allocate to the train subset.
             val_prop (float): Proportion of samples to allocate to the validation subset.
             test_prop (float): Proportion of samples to allocate to the test subset.
             verbose (bool): Specifies whether to print distributions of subsets.
         """
 
-        train_split, val_split, test_split = random_split(
-            range(len(self)),
-            lengths = [train_prop, val_prop, test_prop],
-            generator = torch.Generator().manual_seed(self.seed)
+        indices = list(range(len(self)))
+        labels = self.labels
+
+        # Split off test set
+        train_val_idx, test_idx = train_test_split(
+            indices, test_size=test_prop, stratify=labels, random_state=self.seed
+        )
+
+        # Split remaining into train and val
+        train_val_labels = [labels[i] for i in train_val_idx]
+        relative_val = val_prop / (train_prop + val_prop)
+        train_idx, val_idx = train_test_split(
+            train_val_idx, test_size=relative_val, stratify=train_val_labels, random_state=self.seed
         )
 
         if verbose:
-            self.print_dataset_details(train_split.indices, 'Train')
-            self.print_dataset_details(val_split.indices, 'Validation')
-            self.print_dataset_details(test_split.indices, 'Test')
+            self.print_dataset_details(train_idx, 'Train')
+            self.print_dataset_details(val_idx, 'Validation')
+            self.print_dataset_details(test_idx, 'Test')
 
-        return train_split.indices, val_split.indices, test_split.indices
+        return train_idx, val_idx, test_idx
     
     def append_image_transforms(self, image_transforms: transforms.Compose = None, 
                                 replace: bool = False, verbose: bool = False):
@@ -300,9 +311,9 @@ class ImageDataset(Dataset):
             
     
     def create_dataloaders(self, batch_size: int, train_indices, val_indices, test_indices,
-                           image_transforms: transforms.Compose = None, transform_val: bool = False, 
-                           train_sample_weights: torch.tensor = None):
-        
+                           image_transforms: transforms.Compose = None, transform_val: bool = False,
+                           train_sample_weights: torch.tensor = None, balanced: bool = False):
+
         """
         Creates the train, validatinon and test DataLoaders required for training a PyTorch model.
         If `train_sample_weights` is specified, they are supplied to WeightedRandomSampler for the train subset.
@@ -315,7 +326,13 @@ class ImageDataset(Dataset):
             image_transforms (transforms.Compose, optional): Additional image transformations for the train subset.
             transform_val (bool): Specifies whether to apply train image transformations to the validation subset.
             train_sample_weights (torch.tensor, optional): Contains weights for each sample in the train subset.
+            balanced (bool): If True and train_sample_weights is None, auto-computes inverse-frequency weights.
         """
+
+        if balanced and train_sample_weights is None:
+            train_labels = [self.labels[i] for i in train_indices]
+            class_counts = Counter(train_labels)
+            train_sample_weights = [1.0 / class_counts[label] for label in train_labels]
 
         if image_transforms is not None:
             dataset_aug = copy.deepcopy(self)
@@ -605,20 +622,28 @@ class HierImageDataset(Dataset):
 
         """
         Returns indices corresponding to the train, validation and test subsets of the Dataset.
+        Uses stratified splitting to ensure minority classes are proportionally represented.
 
         Args:
-            trian_prop (float): Proportion of samples to allocate to the train subset.
+            train_prop (float): Proportion of samples to allocate to the train subset.
             val_prop (float): Proportion of samples to allocate to the validation subset.
             test_prop (float): Proportion of samples to allocate to the test subset.
         """
 
-        train_split, val_split, test_split = random_split(
-            range(len(self)),
-            lengths = [train_prop, val_prop, test_prop],
-            generator = torch.Generator().manual_seed(self.seed)
+        indices = list(range(len(self)))
+        labels = self.labels
+
+        train_val_idx, test_idx = train_test_split(
+            indices, test_size=test_prop, stratify=labels, random_state=self.seed
         )
 
-        return train_split.indices, val_split.indices, test_split.indices
+        train_val_labels = [labels[i] for i in train_val_idx]
+        relative_val = val_prop / (train_prop + val_prop)
+        train_idx, val_idx = train_test_split(
+            train_val_idx, test_size=relative_val, stratify=train_val_labels, random_state=self.seed
+        )
+
+        return train_idx, val_idx, test_idx
     
     def append_image_transforms(
         self, image_transforms: transforms.Compose = None, replace: bool = False
@@ -657,10 +682,10 @@ class HierImageDataset(Dataset):
                     
     def create_dataloaders(
         self, batch_size: int, train_indices, val_indices, test_indices,
-        image_transforms: transforms.Compose = None, transform_val: bool = False, 
-        train_sample_weights: torch.tensor = None
+        image_transforms: transforms.Compose = None, transform_val: bool = False,
+        train_sample_weights: torch.tensor = None, balanced: bool = False
     ):
-        
+
         """
         Creates the train, validatinon and test DataLoaders required for training a PyTorch model.
         If `train_sample_weights` is specified, they are supplied to WeightedRandomSampler for the train subset.
@@ -673,7 +698,13 @@ class HierImageDataset(Dataset):
             image_transforms (transforms.Compose, optional): Additional image transformations for the train subset.
             transform_val (bool): Specifies whether to apply train image transformations to the validation subset.
             train_sample_weights (torch.tensor, optional): Contains weights for each sample in the train subset.
+            balanced (bool): If True and train_sample_weights is None, auto-computes inverse-frequency weights.
         """
+
+        if balanced and train_sample_weights is None:
+            train_labels = [self.labels[i] for i in train_indices]
+            class_counts = Counter(train_labels)
+            train_sample_weights = [1.0 / class_counts[label] for label in train_labels]
 
         if image_transforms is not None:
             dataset_aug = copy.deepcopy(self)

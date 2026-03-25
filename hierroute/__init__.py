@@ -1,4 +1,4 @@
-from .model import Expert, HierMoeNet
+from .model import Expert, HierRouteNet
 from .trainer import Trainer
 from .data_setup import ImageDataset, HierImageDataset
 from .hierarchy import Node, Hierarchy

@@ -4,24 +4,51 @@ import torch.nn as nn
 import torchvision.models as models
 from pathlib import Path
 
+class FocalLoss(nn.Module):
+    """
+    Focal loss for binary cross-entropy on probability inputs with one-hot targets.
+    Applies modulating factor (1 - pt)^gamma to down-weight easy examples.
+    """
+    def __init__(self, gamma=2.0):
+        super().__init__()
+        self.gamma = gamma
+
+    def forward(self, input, target):
+        """
+        input: [N, C], float32 — probabilities (already softmaxed/path-product)
+        target: [N, C], float32 — one-hot encoded targets
+        Returns: [N, C] per-element focal BCE losses (unreduced)
+        """
+        bce = -(target * torch.log(input) + (1 - target) * torch.log(1 - input))
+        pt = target * input + (1 - target) * (1 - input)
+        focal_weight = (1 - pt) ** self.gamma
+        return focal_weight * bce
+        
 
 class Expert(nn.Module):
-    def __init__(self, in_dim, num_children, mode="soft", n_hidden=1):
+    def __init__(self, in_dim, num_children, mode="soft", expert_type="mlp"):
         super().__init__()
-        if n_hidden==0:
+        if expert_type == "linear":
             self.layer = nn.Sequential(nn.Linear(in_dim, num_children))
-        elif n_hidden==1:
+        elif expert_type == "mlp":
             self.layer = nn.Sequential(
-                nn.Linear(in_dim, 2*in_dim), 
+                nn.Linear(in_dim, 2*in_dim),
                 nn.ReLU(),
                 nn.Linear(2*in_dim, num_children))
+        elif expert_type == "cnn":
+            self.layer = nn.Sequential(
+                nn.Conv2d(in_dim, 256, kernel_size=1),
+                nn.ReLU(),
+                nn.Conv2d(256, 64, kernel_size=2),
+                nn.ReLU(),
+                nn.Flatten(1),
+                nn.LazyLinear(num_children)) # allows different resolution images.
         else:
-            print(f"Invalid number of hidden layers defaulting to 0 hidden layers")
-            self.layer = nn.Sequential(nn.Linear(in_dim, num_children))
+            raise ValueError(f"Unsupported expert_type: {expert_type}")
         self.mode = mode
+        self.expert_type = expert_type
 
     def forward(self, x):
-        # x = self.relu(self.fc1(x))
         logits = self.layer(x)
         if self.mode == "soft":
             weights = torch.softmax(logits, dim=-1)
@@ -34,23 +61,50 @@ class Expert(nn.Module):
         else:
             raise ValueError("mode must be 'soft' or 'hard'")
 
-class HierMoeNet(nn.Module):
+class HierRouteNet(nn.Module):
     def __init__(self, hierarchy, label_to_id, weights_directory=None,
-                 checkpoint_dir=None, seed=123):
+                 checkpoint_dir=None, seed=123, loss_type="bce", focal_gamma=2.0,
+                 backbone="efficientnet_b0", freeze_backbone=False,
+                 expert_type="mlp"):
         super().__init__()
         self.hierarchy = hierarchy
         self.seed = seed
         self.label_to_id = label_to_id
-        backbone = models.efficientnet_b0(weights = weights_directory)
-        self.shared = backbone.features
-        self.pool = backbone.avgpool
-        self.feature_dim = backbone.classifier[1].in_features
+        self.loss_type = loss_type
+        self.backbone_type = backbone
+        self.expert_type = expert_type
+
+        if backbone == "efficientnet_b0":
+            bb = models.efficientnet_b0(weights=weights_directory)
+            self.shared = bb.features
+            self.pool = bb.avgpool
+            self.feature_dim = bb.classifier[1].in_features
+        elif backbone == "swin_t":
+            bb = models.swin_t(weights=models.Swin_T_Weights.IMAGENET1K_V1)
+            self.shared = bb.features
+            self.pool = nn.AdaptiveAvgPool2d(1)
+            self.feature_dim = bb.head.in_features
+        elif backbone == "swin_s":
+            bb = models.swin_s(weights=models.Swin_S_Weights.IMAGENET1K_V1)
+            self.shared = bb.features
+            self.pool = nn.AdaptiveAvgPool2d(1)
+            self.feature_dim = bb.head.in_features
+        else:
+            raise ValueError(f"Unsupported backbone: {backbone}")
+
+        if freeze_backbone:
+            for param in self.shared.parameters():
+                param.requires_grad = False
+
         self.local_classifiers = nn.ModuleDict()
         for node_id, node in hierarchy.nodes.items():
             if len(node.children) > 0:
-                self.local_classifiers[str(node_id)] = Expert(self.feature_dim,len(node.children))
+                self.local_classifiers[str(node_id)] = Expert(self.feature_dim, len(node.children), expert_type=expert_type)
         self.leaf_index = torch.tensor(hierarchy.get_leaf_index(), dtype=torch.float32)
-        self.bce = nn.BCELoss(reduction='none')
+        if loss_type == "focal":
+            self.loss = FocalLoss(gamma=focal_gamma)
+        else:
+            self.loss = nn.BCELoss(reduction='none')
 
         if checkpoint_dir is not None:
             pt_files = list(Path(checkpoint_dir).glob("*.pt"))
@@ -64,8 +118,13 @@ class HierMoeNet(nn.Module):
     def forward(self, x):
         # --- Backbone ---
         x = self.shared(x)
-        x = self.pool(x)
-        x = torch.flatten(x, 1)                    # (B, feature_dim)
+        if self.backbone_type.startswith("swin"):
+            x = x.permute(0, 3, 1, 2)              # (B, H, W, C) -> (B, C, H, W)
+
+        if self.expert_type == "cnn":
+            feat = x                                # (B, C, H, W) — pre-pool
+        else:
+            feat = torch.flatten(self.pool(x), 1)   # (B, feature_dim)
 
         # --- Run all local classifiers in one pass ---
         # Store conditional probs for every internal node
@@ -73,7 +132,7 @@ class HierMoeNet(nn.Module):
         node_probs = {}
         node_logits = {}
         for node_id, classifier in self.local_classifiers.items():
-            probs, logits = classifier.forward(x)   # (B, num_children)
+            probs, logits = classifier.forward(feat) # (B, num_children)
             node_probs[node_id] = probs
             node_logits[node_id] = logits
 
@@ -85,8 +144,8 @@ class HierMoeNet(nn.Module):
             path = self.hierarchy.get_path_to_root(node_id)
 
             # Start with prob=1 and multiply down the path
-            B = x.shape[0]
-            prob = torch.ones(B, device=x.device)   # (B,)
+            B = feat.shape[0]
+            prob = torch.ones(B, device=feat.device) # (B,)
 
             for i in range(len(path) - 1):
                 parent = path[i]
@@ -117,8 +176,13 @@ class HierMoeNet(nn.Module):
                        reflecting the exact sequence of expert decisions made
         """
         feat = self.shared(x)
-        feat = self.pool(feat)
-        feat = torch.flatten(feat, 1)           # (B, feature_dim)
+        if self.backbone_type.startswith("swin"):
+            feat = feat.permute(0, 3, 1, 2)     # (B, H, W, C) -> (B, C, H, W)
+
+        if self.expert_type == "cnn":
+            pass                                 # keep (B, C, H, W) for CNN experts
+        else:
+            feat = torch.flatten(self.pool(feat), 1)  # (B, feature_dim)
 
         B = feat.shape[0]
         current_nodes = [self.hierarchy.root] * B
@@ -148,7 +212,7 @@ class HierMoeNet(nn.Module):
     def loss_fn(self, logits, targets):
         leaf_index = self.leaf_index.to(logits.device)
         logits = logits.clamp(1e-7, 1 - 1e-7)
-        loss = self.bce(logits, targets) * leaf_index
+        loss = self.loss(logits, targets) * leaf_index
         loss = loss.sum(dim=1) / self.leaf_index.sum()
         return loss.mean()
 
