@@ -50,15 +50,16 @@ class ImageDataset(Dataset):
         format_file (str): Format of images files. Default: '.tif' 
     """
 
-    def __init__(self, data_directory, data_subdirectories: list = None, class_names: list = None, 
-                 class_sizes: list = None, class_ids: list = None, max_class_size: int = 10000, 
+    def __init__(self, data_directory, data_subdirectories: list = None, class_names: list = None,
+                 class_sizes: list = None, class_ids: list = None, max_class_size: int = 10000,
                  image_resolution: int = 28, image_transforms = None, seed: int = 666,
-                 format_file = '.tif'):
+                 format_file = '.tif', class_folder_map: dict = None):
         
         self.data_directory = data_directory
         self.data_subdirectories = ['']
         self.seed = seed
         self.class_names = class_names
+        self.class_folder_map = class_folder_map or {}
 
         set_seed(seed)
 
@@ -91,14 +92,16 @@ class ImageDataset(Dataset):
             # Retrieve all image paths across directories for specified class
             class_paths = []
 
+            folder_names = self.class_folder_map.get(class_name, [class_name])
+
             for data_subdirectory in self.data_subdirectories:
+                for folder_name in folder_names:
+                    class_directory = os.path.join(data_directory, data_subdirectory, folder_name)
 
-                class_directory = os.path.join(data_directory, data_subdirectory, class_name)
-
-                if os.path.isdir(class_directory):
-                    class_paths.extend(
-                        [os.path.join(class_directory, filename) for filename in os.listdir(class_directory)]
-                    )
+                    if os.path.isdir(class_directory):
+                        class_paths.extend(
+                            [os.path.join(class_directory, filename) for filename in os.listdir(class_directory)]
+                        )
 
             # Determine new class size and sample images, only include .tif files
             class_idx = class_ids.index(class_id)

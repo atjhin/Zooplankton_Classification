@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 from pathlib import Path
+from .extra_functions import validate_checkpoint
 
 class FocalLoss(nn.Module):
     """
@@ -75,7 +76,7 @@ class HierRouteNet(nn.Module):
         self.expert_type = expert_type
 
         if backbone == "efficientnet_b0":
-            bb = models.efficientnet_b0(weights=weights_directory)
+            bb = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.IMAGENET1K_V1)
             self.shared = bb.features
             self.pool = bb.avgpool
             self.feature_dim = bb.classifier[1].in_features
@@ -111,7 +112,8 @@ class HierRouteNet(nn.Module):
             if not pt_files:
                 raise FileNotFoundError(f"No .pt file found in '{checkpoint_dir}'")
             checkpoint_path = pt_files[0]
-            self.load_state_dict(torch.load(checkpoint_path, map_location="cpu"))
+            ckpt_state = validate_checkpoint(checkpoint_path, self, backbone, expert_type)
+            self.load_state_dict(ckpt_state)
             print(f"Loaded checkpoint: {checkpoint_path}")
 
 

@@ -93,46 +93,28 @@ hier_adjacency_graph = {
     'Daphnia': []  
 }
 
-whoi_adjacency_graph_l = {                                                                                                                                                              
-      'root': ['Bacilllariophytina', 'Coscinodiscophytina'],                                                                                                                            
-                                                                                                                                                                                        
-      'Bacilllariophytina': ['Bacilliorhycaea', 'Mediophycaea'],                                                                                                                        
-      'Coscinodiscophytina': ['Coscinodiscophyceae'],                                                                                                                                   
-                                                                                                                                                                                        
-      'Bacilliorhycaea': ['Bacillariophycidae', 'Fragilariophycidae'], 
+whoi_adjacency_graph_l = {
+      'root': ['Bacilllariophytina', 'Coscinodiscophyceae'],
+
+      'Bacilllariophytina': ['Bacilliorhycaea', 'Mediophycaea'],
+      'Coscinodiscophyceae': ['Corethron', 'Rhizosoleniaceae'],
+
+      'Bacilliorhycaea': ['Bacillariaceae', 'Thalassionema'],
       'Mediophycaea': ['Chaetocerothophycidae', 'Thalassiosirophycidae'],
-      'Coscinodiscophyceae': ['Corethopycidae', 'Rhyzosoleniophycidae'],
 
-      'Bacillariophycidae': ['Bacillariales'],
-      'Fragilariophycidae': ['Thalassionematales'],
-      'Chaetocerothophycidae': ['Chaetocerotales', 'Hemiaulales'],
-      'Thalassiosirophycidae': ['Lethodesmiales', 'Thalassiosoreles'],
-      'Corethopycidae': ['Corethales'],
-      'Rhyzosoleniophycidae': ['Rhyzosoleniophycidae_order'],
+      'Chaetocerothophycidae': ['Chaetocerotales', 'Hemiaulaceae'],
+      'Thalassiosirophycidae': ['Ditylum', 'Thalassiosoreles'],
 
-      'Bacillariales': ['Bacillariaceae'],
-      'Thalassionematales': ['Thalassionematecaea'],
-      'Chaetocerotales': ['Chaetocerotacae', 'Leptocylindaceae'],
-      'Hemiaulales': ['Hemiaulaceae'],
-      'Lethodesmiales': ['Lithodesmiaceae'],
-      'Thalassiosoreles': ['Skeletonemataceae', 'Thalassiosiraceae'],
-      'Corethales': ['Corethraceae'],
-      'Rhyzosoleniophycidae_order': ['Rhizosoleniaceae'],
-
-      'Bacillariaceae': ['Cylindrotheca', 'Pseudonitzchia'],
-      'Thalassionematecaea': ['Thalassiomema'],
-      'Chaetocerotacae': ['Chaetoceros'],
-      'Leptocylindaceae': ['Leptocylindrus'],
+      'Chaetocerotales': ['Chaetoceros', 'Leptocylindrus'],
       'Hemiaulaceae': ['Cerataulina', 'Eucampia'],
-      'Lithodesmiaceae': ['Ditylum'],
-      'Skeletonemataceae': ['Skeletonema'],
-      'Thalassiosiraceae': ['Thalassiosira'],
-      'Corethraceae': ['Corethon'],
-      'Rhizosoleniaceae': ['Dactyliosolem', 'Guinardia', 'Rhizosolenia'],
+      'Thalassiosoreles': ['Skeletonema', 'Thalassiosira'],
+
+      'Bacillariaceae': ['Cylindrotheca', 'Pseudonitzschia'],
+      'Rhizosoleniaceae': ['Dactyliosolen', 'Guinardia', 'Rhizosolenia'],
 
       'Cylindrotheca': [],
-      'Pseudonitzchia': [],
-      'Thalassiomema': [],
+      'Pseudonitzschia': [],
+      'Thalassionema': [],
       'Chaetoceros': [],
       'Leptocylindrus': [],
       'Cerataulina': [],
@@ -140,8 +122,8 @@ whoi_adjacency_graph_l = {
       'Ditylum': [],
       'Skeletonema': [],
       'Thalassiosira': [],
-      'Corethon': [],
-      'Dactyliosolem': [],
+      'Corethron': [],
+      'Dactyliosolen': [],
       'Guinardia': [],
       'Rhizosolenia': [],
   }

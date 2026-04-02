@@ -8,6 +8,313 @@ import matplotlib.ticker as mticker
 import seaborn as sns
 from pathlib import Path
 
+def visualize_swin_attention(model, image_tensor, stage=5, overlay=True, label=None, save_path=None):
+    """
+    Visualizes self-attention maps from a chosen stage of the swin_t backbone.
+
+    Hooks each SwinTransformerBlock's attention module to capture its normalized
+    spatial input (B, H, W, C), then manually applies the qkv projection and
+    recomputes attention weights (softmax(QK^T / sqrt(d_head))), averaged across
+    heads, and overlays the result on the original image.
+
+    Best used with stage=5 (4x4 spatial resolution, single window) for 64x64 images.
+
+    Args:
+        model:        HierRouteNet with swin_t backbone (eval mode recommended).
+        image_tensor: (1, 3, H, W) float tensor, same preprocessing as training.
+        stage:        Index into model.shared (default 5 = stage 3, 4x4 patches).
+        overlay:      If True (default), overlays the attention map on the input image.
+                      If False, shows the raw attention heatmap without the image.
+        save_path:    Optional path to save the figure (e.g. 'attention.png').
+
+    Returns:
+        fig: matplotlib Figure.
+    """
+    import torch.nn.functional as F
+
+    stage_module = model.shared[stage]
+    n_blocks = len(stage_module)
+
+    # Hook block.attn (ShiftedWindowAttention) to capture its normalized input (B, H, W, C).
+    # Hooking attn.qkv is unreliable across torchvision versions because the windowing
+    # pre-processing happens inside the module before qkv is called.
+    captured = {}
+
+    def make_hook(idx):
+        def hook(module, input, output):
+            captured[idx] = (input[0].detach(), module)   # (B, H, W, C), module ref
+        return hook
+
+    handles = []
+    for i, block in enumerate(stage_module):
+        handles.append(block.attn.register_forward_hook(make_hook(i)))
+
+    model.eval()
+    with torch.no_grad():
+        _ = model.shared(image_tensor.to(next(model.parameters()).device))
+
+    for h in handles:
+        h.remove()
+
+    attn_maps = []
+
+    for idx in range(n_blocks):
+        x_spatial, attn_module = captured[idx]          # (B, H, W, C)
+        B, H_f, W_f, C = x_spatial.shape
+        nP      = H_f * W_f
+        n_heads = attn_module.num_heads
+        d_head  = C // n_heads
+
+        x_flat = x_spatial.reshape(B, nP, C)
+        with torch.no_grad():
+            qkv = attn_module.qkv(x_flat)               # (B, nP, 3*C)
+
+        q, k, _ = qkv.chunk(3, dim=-1)
+        q = q.reshape(B, nP, n_heads, d_head).permute(0, 2, 1, 3)
+        k = k.reshape(B, nP, n_heads, d_head).permute(0, 2, 1, 3)
+
+        attn = (q @ k.transpose(-2, -1)) * (d_head ** -0.5)
+        attn = attn.softmax(dim=-1)                     # (B, n_heads, nP, nP)
+
+        attn_mean = attn.mean(dim=0).mean(dim=0)        # (nP, nP) — avg over batch & heads
+        attended  = attn_mean.mean(dim=0)               # (nP,)    — avg incoming attention per patch
+
+        attn_spatial = attended.reshape(H_f, W_f).cpu().numpy()
+        attn_maps.append(attn_spatial)
+
+    img_np = image_tensor[0].permute(1, 2, 0).cpu().numpy()
+    img_np = (img_np - img_np.min()) / (img_np.max() - img_np.min() + 1e-8)
+    if img_np.shape[2] == 1:
+        img_np = img_np.squeeze(-1)
+
+    n_cols = n_blocks + 1
+    fig, axes = plt.subplots(1, n_cols, figsize=(3 * n_cols, 3.5))
+    title = f'Swin-T Self-Attention Maps — stage index {stage}'
+    if label is not None:
+        title += f' — {label}'
+    fig.suptitle(title,
+                 fontsize=11, fontweight='bold')
+
+    axes[0].imshow(img_np, cmap='gray' if img_np.ndim == 2 else None)
+    axes[0].set_title('Input', fontsize=9)
+    axes[0].axis('off')
+
+    for i, attn_map in enumerate(attn_maps):
+        upsampled = F.interpolate(
+            torch.tensor(attn_map).unsqueeze(0).unsqueeze(0).float(),
+            size=image_tensor.shape[-2:], mode='bilinear', align_corners=False
+        ).squeeze().numpy()
+        upsampled = (upsampled - upsampled.min()) / (upsampled.max() - upsampled.min() + 1e-8)
+
+        if overlay:
+            axes[i + 1].imshow(img_np, cmap='gray' if img_np.ndim == 2 else None)
+            im = axes[i + 1].imshow(upsampled, cmap='hot', alpha=0.55)
+        else:
+            im = axes[i + 1].imshow(upsampled, cmap='hot')
+        axes[i + 1].set_title(f'Block {i}', fontsize=9)
+        axes[i + 1].axis('off')
+
+    plt.tight_layout()
+
+    cbar = fig.colorbar(im, ax=axes.tolist(), fraction=0.02, pad=0.02)
+    cbar.set_label('Attention magnitude', fontsize=8)
+    cbar.ax.tick_params(labelsize=7)
+
+    if save_path:
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        print(f'Saved → {save_path}')
+
+    return fig
+
+
+def visualize_gradcam(model, image_tensor, target_leaf, weights, stage=5, overlay=True, label=None, save_path=None):
+    """
+    Visualizes Grad-CAM from a chosen stage of the swin_t backbone, using a
+    weighted sum of log-probabilities along the root-to-leaf hierarchy path as
+    the score to differentiate.
+
+    Args:
+        model:        HierRouteNet with swin_t backbone (will be set to eval mode).
+        image_tensor: (1, 3, H, W) float tensor, same preprocessing as training.
+        target_leaf:  Name of the target leaf class (e.g. "Calanoid").
+        weights:      List of floats, one per hierarchy edge (e.g. [1,1,1] for full
+                      path, [0,0,1] for species level only, [1,0,0] for top level).
+                      Length must equal the depth of target_leaf in the hierarchy.
+        stage:        Index into model.shared (default 5 = stage 3, 4x4 spatial
+                      resolution for 64x64 images).
+        overlay:      If True (default), overlays the CAM on the input image.
+                      If False, shows the raw CAM heatmap without the image.
+        label:        Optional string appended to the figure title.
+        save_path:    Optional path to save the figure (e.g. 'gradcam.png').
+
+    Returns:
+        fig: matplotlib Figure with two panels (input image + Grad-CAM).
+    """
+    import torch.nn.functional as F
+
+    # --- 1. Hierarchy lookup ---
+    name_to_id = {node.name: nid for nid, node in model.hierarchy.nodes.items()}
+    if target_leaf not in name_to_id:
+        raise ValueError(
+            f"'{target_leaf}' not found in hierarchy. "
+            f"Available names: {sorted(name_to_id.keys())}"
+        )
+    leaf_id = name_to_id[target_leaf]
+    path = model.hierarchy.get_path_to_root(leaf_id)  # [root_id, ..., leaf_id] as ints
+
+    if len(weights) != len(path) - 1:
+        raise ValueError(
+            f"'weights' has {len(weights)} entries but path from root to "
+            f"'{target_leaf}' has {len(path) - 1} edges. "
+            f"Provide exactly {len(path) - 1} weights."
+        )
+
+    # --- 2. Register hooks on the chosen stage ---
+    captured_acts = {}
+    captured_grads = {}
+
+    handles = [
+        model.shared[stage].register_forward_hook(
+            lambda m, i, o: captured_acts.update({'value': o})
+        ),
+        model.shared[stage].register_full_backward_hook(
+            lambda m, gi, go: captured_grads.update({'value': go[0]})
+        ),
+    ]
+
+    model.eval()
+    device = next(model.parameters()).device
+    image_tensor = image_tensor.to(device)
+
+    fig = None
+    try:
+        # --- 3. Forward pass (no torch.no_grad() — gradients must flow) ---
+        logit_tensor, node_logits = model(image_tensor)
+
+        # --- 4. Score: weighted sum of log-probs along root-to-leaf path ---
+        score = sum(
+            weights[d] * F.log_softmax(node_logits[str(parent_id)], dim=-1)[0,
+                model.hierarchy.nodes[parent_id].children.index(child_id)]
+            for d, (parent_id, child_id) in enumerate(zip(path[:-1], path[1:]))
+        )
+
+        # --- 5. Backward pass ---
+        model.zero_grad()
+        score.backward()
+
+        # --- 6. CAM computation (channels-last: B, H_f, W_f, C) ---
+        acts  = captured_acts['value'].detach()   # (B, H_f, W_f, C)
+        grads = captured_grads['value'].detach()  # (B, H_f, W_f, C)
+        alpha = grads.mean(dim=(1, 2))            # (B, C) — pool over spatial dims
+        cam   = F.relu((acts[0] * alpha[0]).sum(-1))  # (H_f, W_f)
+
+        # --- 7. Normalise + upsample ---
+        cam_np = cam.cpu().numpy()
+        cam_np = (cam_np - cam_np.min()) / (cam_np.max() - cam_np.min() + 1e-8)
+        cam_up = F.interpolate(
+            torch.tensor(cam_np).unsqueeze(0).unsqueeze(0).float(),
+            size=image_tensor.shape[-2:], mode='bilinear', align_corners=False
+        ).squeeze().numpy()
+        cam_up = (cam_up - cam_up.min()) / (cam_up.max() - cam_up.min() + 1e-8)
+
+        # --- 8. Image prep ---
+        img_np = image_tensor[0].permute(1, 2, 0).cpu().numpy()
+        img_np = (img_np - img_np.min()) / (img_np.max() - img_np.min() + 1e-8)
+        if img_np.shape[2] == 1:
+            img_np = img_np.squeeze(-1)
+
+        # --- 9. Plot ---
+        fig, axes = plt.subplots(1, 2, figsize=(7, 3.5))
+        title = f'Grad-CAM — stage {stage} — target: {target_leaf}'
+        if label is not None:
+            title += f' — {label}'
+        fig.suptitle(title, fontsize=11, fontweight='bold')
+
+        axes[0].imshow(img_np, cmap='gray' if img_np.ndim == 2 else None)
+        axes[0].set_title('Input', fontsize=9)
+        axes[0].axis('off')
+
+        if overlay:
+            axes[1].imshow(img_np, cmap='gray' if img_np.ndim == 2 else None)
+            im = axes[1].imshow(cam_up, cmap='hot', alpha=0.55)
+        else:
+            im = axes[1].imshow(cam_up, cmap='hot')
+        axes[1].set_title('Grad-CAM', fontsize=9)
+        axes[1].axis('off')
+
+        plt.tight_layout()
+
+        cbar = fig.colorbar(im, ax=axes.tolist(), fraction=0.02, pad=0.02)
+        cbar.set_label('Grad-CAM magnitude', fontsize=8)
+        cbar.ax.tick_params(labelsize=7)
+
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f'Saved → {save_path}')
+
+    finally:
+        for h in handles:
+            h.remove()
+
+    return fig
+
+
+def validate_checkpoint(checkpoint_path, model, backbone: str, expert_type: str):
+    """
+    Loads and validates that a checkpoint state dict is compatible with the given model.
+    Raises ValueError with a categorized message on any mismatch.
+    Returns the loaded state dict if compatible.
+
+    Args:
+        checkpoint_path: Path to the .pt checkpoint file.
+        model: The instantiated model to validate against.
+        backbone: Backbone name used to build the model (for error messages).
+        expert_type: Expert type used to build the model (for error messages).
+    """
+    try:
+        ckpt_state = torch.load(checkpoint_path, map_location="cpu")
+    except Exception as e:
+        raise ValueError(f"Failed to read checkpoint '{checkpoint_path}': {e}") from e
+
+    model_state = model.state_dict()
+    model_keys  = set(model_state.keys())
+    ckpt_keys   = set(ckpt_state.keys())
+
+    missing      = model_keys - ckpt_keys
+    unexpected   = ckpt_keys  - model_keys
+    shape_errors = []
+    for k in model_keys & ckpt_keys:
+        try:
+            if model_state[k].shape != ckpt_state[k].shape:
+                shape_errors.append(
+                    f"{k}: checkpoint {ckpt_state[k].shape} vs model {model_state[k].shape}"
+                )
+        except RuntimeError:
+            pass  # skip uninitialized (lazy) parameters
+
+    if not (missing or unexpected or shape_errors):
+        return ckpt_state
+
+    all_bad = missing | unexpected | {e.split(":")[0] for e in shape_errors}
+    lines = [f"Checkpoint '{checkpoint_path}' is incompatible with the current model configuration."]
+
+    if any(k.startswith(("shared.", "pool.")) for k in all_bad):
+        lines.append(f"  • Backbone mismatch — checkpoint backbone differs from '{backbone}'.")
+    if any(k.startswith("local_classifiers.") for k in all_bad):
+        lines.append(f"  • Expert/hierarchy mismatch — checkpoint expert_type or hierarchy differs from current (expert_type='{expert_type}').")
+
+    if missing:
+        shown = sorted(missing)[:5]
+        lines.append(f"  • Missing keys ({len(missing)}): {shown}" + (" ..." if len(missing) > 5 else ""))
+    if unexpected:
+        shown = sorted(unexpected)[:5]
+        lines.append(f"  • Unexpected keys ({len(unexpected)}): {shown}" + (" ..." if len(unexpected) > 5 else ""))
+    if shape_errors:
+        lines.append(f"  • Shape mismatches ({len(shape_errors)}): {shape_errors[:3]}" + (" ..." if len(shape_errors) > 3 else ""))
+
+    raise ValueError("\n".join(lines))
+
+
 def set_seed(seed: int = 666):
 
     """

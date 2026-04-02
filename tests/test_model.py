@@ -181,6 +181,30 @@ class TestHierRouteNet:
         for (n1, p1), (n2, p2) in zip(model.named_parameters(), loaded.named_parameters()):
             assert torch.equal(p1, p2), f"Mismatch in {n1}"
 
+    def test_checkpoint_wrong_backbone(self, hierarchy_and_labels):
+        h, label_to_id = hierarchy_and_labels
+        model = HierRouteNet(h, label_to_id, backbone="efficientnet_b0", expert_type="linear")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            torch.save(model.state_dict(), os.path.join(tmpdir, "best_model.pt"))
+            with pytest.raises(ValueError, match="Backbone mismatch"):
+                HierRouteNet(h, label_to_id, backbone="swin_t", expert_type="linear", checkpoint_dir=tmpdir)
+
+    def test_checkpoint_wrong_expert_type(self, hierarchy_and_labels):
+        h, label_to_id = hierarchy_and_labels
+        model = HierRouteNet(h, label_to_id, expert_type="mlp")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            torch.save(model.state_dict(), os.path.join(tmpdir, "best_model.pt"))
+            with pytest.raises(ValueError, match="Expert/hierarchy mismatch"):
+                HierRouteNet(h, label_to_id, expert_type="linear", checkpoint_dir=tmpdir)
+
+    def test_checkpoint_corrupted_file(self, hierarchy_and_labels):
+        h, label_to_id = hierarchy_and_labels
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, "best_model.pt"), "wb") as f:
+                f.write(b"not a valid checkpoint")
+            with pytest.raises(ValueError, match="Failed to read checkpoint"):
+                HierRouteNet(h, label_to_id, checkpoint_dir=tmpdir)
+
     def test_batch_size_one(self, hierarchy_and_labels):
         h, label_to_id = hierarchy_and_labels
         model = HierRouteNet(h, label_to_id, expert_type="cnn")
