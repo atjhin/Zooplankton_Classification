@@ -1,5 +1,15 @@
+"""
+constants.py — Project-wide configuration values and taxonomy adjacency graphs.
+
+Adjacency graphs:
+    hier_adjacency_graph   : 3-level freshwater zooplankton taxonomy (Zooplankton-MNR dataset).
+    whoi_adjacency_graph_l : 5-level marine diatom taxonomy based on phylogenetic lineage
+                             (Plankton-WHOI dataset, long/deep hierarchy variant).
+    whoi_adjacency_graph_s : 3-level marine diatom taxonomy based on morphological traits
+                             (Plankton-WHOI dataset, short/shallow hierarchy variant).
+"""
+
 ZOOPLANKTON_CLASSES = [
-    #  'Debris',
      'Bubbles',
      'Exoskeleton',
      'Plant_Matter',
@@ -16,59 +26,20 @@ ZOOPLANKTON_CLASSES = [
      'Nauplius_Copepod'
 ]
 
-data_directory = '/Users/alexandermichaeltjhin/Everything/Repos/Zooplankton/data'
+import os
+data_directory = os.environ.get('ZOOPLANKTON_DATA_DIR', 'data')
 data_subdirectories = ['Processed Data']
-SEED = 666
+SEED = 666            # Global reproducibility seed
 
-MAX_CLASS_SIZE = 6000
-RESOLUTION = 64
+MAX_CLASS_SIZE = 6000  # Maximum samples drawn per class during dataset construction
+RESOLUTION = 64        # Target image resolution in pixels (H × W)
 
-LEVELS = 3
+LEVELS = 3             # Number of non-root levels in the MNR hierarchy
 
-# coarse_names1 = ['Zoop-yes', 'Zoop-No']
-# groups1 = [
-#     [
-#         'Copepoda','Cladocera','Bosminidae','Daphnia',
-#         'Cyclopoid','Harpacticoid','Calanoid','Rotifer',
-#         'Nauplius_Copepod'
-#     ],
-    
-#     ['Debris','Bubbles','Exoskeleton','Fiber_Squiggly']
-# ]
-
-# coarse_names2 = [
-#     'Copepoda', 'Cladocera','Rotifer','Bubbles', 'Exoskeleton',
-#     'Fiber'
-# ]
-# groups2 = [
-#     ['Copepoda','Cyclopoid','Calanoid','Harpacticoid','Nauplius_Copepod'],
-#     ['Cladocera','Bosminidae','Daphnia'],
-#     ['Rotifer'],
-#     ['Bubbles'],
-#     ['Exoskeleton'],
-#     ['Fiber_Squiggly']
-# ]
-
-# coarse_names3 = [
-#     'Cyclopoid','Calanoid','Harpacticoid','Nauplius_Copepod',
-#     'Bosminidae','Daphnia','Rotifer','Bubbles','Exoskeleton','Fiber'
-# ]
-# groups3 = [
-#     ['Cyclopoid'],
-#     ['Calanoid'],
-#     ['Harpacticoid'],
-#     ['Nauplius_Copepod'],
-#     ['Bosminidae'],
-#     ['Daphnia'],
-#     ['Rotifer'],
-#     ['Bubbles'],
-#     ['Exoskeleton'],
-#     ['Fiber_Squiggly'] 
-# ] 
-
-# coarse_names = [coarse_names3,coarse_names2,coarse_names1]
-# groups = [groups3, groups2, groups1]
-
+# ---------------------------------------------------------------------------
+# Zooplankton-MNR hierarchy (freshwater, Ontario Ministry of Natural Resources)
+# 18 nodes | 3 levels | 12 leaf classes
+# ---------------------------------------------------------------------------
 hier_adjacency_graph = {
     'root': ['Zoop-yes', 'Zoop-No'],
     
@@ -77,7 +48,7 @@ hier_adjacency_graph = {
     
     'Copepoda': ['Cyclopoid', 'Calanoid', 'Harpacticoid', 'Nauplius_Copepod'],
     'Cladocera': ['Bosminidae', 'Daphnia'],
-    # 'Debris': [],
+
     'Fiber': ['Fiber_Hairlike', 'Fiber_Squiggly'],
     'Rotifer': [],  
     'Bubbles': [],  
@@ -93,6 +64,10 @@ hier_adjacency_graph = {
     'Daphnia': []  
 }
 
+# ---------------------------------------------------------------------------
+# Plankton-WHOI hierarchy — phylogenetic lineage variant
+# 27 nodes | 5 levels | 14 leaf classes
+# ---------------------------------------------------------------------------
 whoi_adjacency_graph_l = {
       'root': ['Bacilllariophytina', 'Coscinodiscophyceae'],
 
@@ -128,6 +103,10 @@ whoi_adjacency_graph_l = {
       'Rhizosolenia': [],
   }
 
+# ---------------------------------------------------------------------------
+# Plankton-WHOI hierarchy — morphological traits variant
+# 21 nodes | 3 levels | 16 leaf classes
+# ---------------------------------------------------------------------------
 whoi_adjacency_graph_s = {
       'root': ['Colonial', 'Unicellular'],
 

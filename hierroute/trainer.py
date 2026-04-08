@@ -1,12 +1,41 @@
+from __future__ import annotations
+
 import os
 import json
 import torch
 import numpy as np
+from torch.utils.data import DataLoader
 from sklearn.metrics import f1_score, precision_recall_fscore_support
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .model import HierRouteNet
 
 class Trainer:
-    def __init__(self, learning_rate, max_epochs, gradient_clip_val=1, device="cpu",
-                 print_every: int=5, model_dir=None):
+    """
+    Training and evaluation engine for HierRouteNet.
+
+    Handles the full training loop (with early stopping), inference over a DataLoader,
+    per-level hierarchical evaluation, and structural consistency checking.
+
+    Attributes:
+        learning_rate     (float):      Initial learning rate for Adam.
+        max_epochs        (int):        Maximum number of training epochs.
+        gradient_clip_val (float):      Max gradient norm for clipping; 0 disables clipping.
+        device            (str):        PyTorch device string (e.g. ``"cpu"``, ``"cuda"``).
+        model_dir         (str | None): Directory for saving checkpoints and metadata.
+                                        A numeric suffix is appended if it already exists.
+        print_every       (int):        Log progress every this many epochs (default 5).
+        train_loss        (list[float]):Per-epoch average training loss.
+        valid_loss        (list[float]):Per-epoch average validation loss.
+        train_acc         (list[float]):Per-epoch training accuracy (leaf level).
+        valid_acc         (list[float]):Per-epoch validation accuracy (leaf level).
+        train_f1          (list[float]):Per-epoch training macro-F1 (leaf level).
+        valid_f1          (list[float]):Per-epoch validation macro-F1 (leaf level).
+    """
+
+    def __init__(self, learning_rate: float, max_epochs: int, gradient_clip_val: float = 1,
+                 device: str = "cpu", print_every: int = 5, model_dir: str = None) -> None:
         self.learning_rate = learning_rate
         self.max_epochs = max_epochs
         self.gradient_clip_val = gradient_clip_val
@@ -21,12 +50,23 @@ class Trainer:
         self.print_every = print_every
 
     @staticmethod
-    def clip_gradients(model, max_norm):
+    def clip_gradients(model: "HierRouteNet", max_norm: float) -> None:
+        """
+        Clip the gradient norm of all model parameters in-place.
+
+        Args:
+            model    (HierRouteNet): The model whose gradients to clip.
+            max_norm (float):        Maximum allowed L2 norm. Pass 0 or None to skip clipping.
+        """
         if max_norm:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
     @staticmethod
-    def _get_level_predictions(model, pred_paths, true_ids):
+    def _get_level_predictions(
+        model: HierRouteNet,
+        pred_paths: list[list[int]],
+        true_ids: torch.Tensor,
+    ) -> dict[int, tuple[np.ndarray, np.ndarray]]:
         """
         Aligns predictions and true labels at each hierarchy depth.
         Returns {depth: (preds_array, trues_array)} using the same
@@ -48,7 +88,11 @@ class Trainer:
         return level_arrays
 
     @staticmethod
-    def compute_metrics(leaf_probs, label_node, leaf_index):
+    def compute_metrics(
+        leaf_probs: torch.Tensor,
+        label_node: torch.Tensor,
+        leaf_index: torch.Tensor,
+    ) -> tuple[float, float]:
         """
         Converts soft predictions and targets to hard class predictions
         over leaf nodes only, then computes accuracy and macro F1.
@@ -75,7 +119,16 @@ class Trainer:
         return accuracy, f1
 
 
-    def fit(self, model, train_loader, valid_loader, optimizer=None, scheduler=False, patience=15, delta=0.0005):
+    def fit(
+        self,
+        model: HierRouteNet,
+        train_loader: DataLoader,
+        valid_loader: DataLoader,
+        optimizer: torch.optim.Optimizer | None = None,
+        scheduler: bool = False,
+        patience: int = 15,
+        delta: float = 0.0005,
+    ) -> None:
         """
         Train the model with early stopping on validation accuracy.
 
@@ -243,7 +296,7 @@ class Trainer:
             print(f"  best_model.pt   — best checkpoint (epoch {best_epoch}, val_acc={best_val_acc:.4f})")
             print(f"  training_info.json — hyperparameters and per-epoch metrics")
 
-    def predict(self, model, pred_loader, save=False):
+    def predict(self, model: HierRouteNet, pred_loader: DataLoader, save: bool = False) -> dict:
         """
         Run model.predict() over a loader, call evaluate() and count_mismatches(), and return results.
 
@@ -313,7 +366,13 @@ class Trainer:
             "mismatch_results": mismatch_results,
         }
 
-    def evaluate(self, model, pred_ids, true_ids, pred_paths):
+    def evaluate(
+        self,
+        model: HierRouteNet,
+        pred_ids: torch.Tensor,
+        true_ids: torch.Tensor,
+        pred_paths: list[list[int]],
+    ) -> dict[int, dict]:
         """
         Compute per-level and per-class metrics using the expert paths from model.predict().
 
@@ -411,7 +470,7 @@ class Trainer:
 
         return results
 
-    def count_mismatches(self, model, pred_paths):
+    def count_mismatches(self, model: HierRouteNet, pred_paths: list[list[int]]) -> dict:
         """
         Checks structural consistency of predictions using the expert paths from model.predict().
 

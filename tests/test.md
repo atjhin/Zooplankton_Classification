@@ -14,7 +14,6 @@ tests/
 ├── conftest.py              # Shared pytest fixtures
 ├── test_hierarchy.py        # Node and Hierarchy data structures
 ├── test_model.py            # FocalLoss, Expert, HierRouteNet
-├── test_data_setup.py       # ImageDataset, HierImageDataset
 ├── test_trainer.py          # Trainer (fit, predict, evaluate)
 ├── test_extra_functions.py  # set_seed, Visualize
 └── test_integration.py      # End-to-end pipeline
@@ -143,39 +142,6 @@ Images used:
 
 ---
 
-## test_data_setup.py — ImageDataset, HierImageDataset
-
-Tests the data loading and preprocessing pipeline using synthetic `.tif` images.
-
-### TestImageDataset (5 tests)
-
-| Test | What it verifies |
-|------|-----------------|
-| `test_dataset_length` | Dataset length matches number of images created (3 classes x 20 images) |
-| `test_split_proportions` | Train/val/test split sizes are approximately 70%/10%/20% |
-| `test_split_no_overlap` | No index appears in more than one split |
-| `test_split_covers_all` | Union of all splits equals the full dataset |
-| `test_create_dataloaders` | Returns 3 non-empty DataLoaders |
-
-### TestHierImageDataset (10 tests)
-
-Uses a flat hierarchy (`root → ClassA, ClassB, ClassC`) matching the synthetic data.
-
-| Test | What it verifies |
-|------|-----------------|
-| `test_length` | Dataset has samples after construction |
-| `test_getitem_keys` | Each item has keys: `image`, `label_node`, `path`, `targets`, `masks` |
-| `test_getitem_image_shape` | Image tensor shape is `(3, 64, 64)` |
-| `test_path_starts_at_root` | Every sample's path begins at the hierarchy root |
-| `test_path_ends_at_label` | Every sample's path ends at its assigned label node |
-| `test_targets_are_valid_child_indices` | Target child indices are within bounds for each parent node |
-| `test_masks_are_binary` | Mask values are 0 or 1 |
-| `test_collate_fn` | Batch collation stacks images to `(B, 3, 64, 64)` and one-hot encodes labels |
-| `test_leaves_only_filtering` | With `leaves_only=True`, all labels correspond to leaf nodes |
-| `test_create_dataloaders` | DataLoaders produce batches with expected keys |
-
----
-
 ## test_trainer.py — Trainer
 
 Tests the training loop, prediction, and evaluation.
@@ -262,10 +228,9 @@ A single comprehensive test (`test_full_pipeline`) that exercises the entire wor
 |------|-------|
 | `test_hierarchy.py` | 21 |
 | `test_model.py` | 25 |
-| `test_data_setup.py` | 15 |
 | `test_trainer.py` | 8 |
 | `test_extra_functions.py` | 5 |
 | `test_integration.py` | 1 |
-| **Total** | **75** |
+| **Total** | **60** |
 
 Note: Some tests are parametrized (e.g., `test_forward_output_shapes` runs once per expert type), so the actual number of test cases executed by pytest may be higher.

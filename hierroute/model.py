@@ -1,20 +1,22 @@
+from __future__ import annotations
 
 import torch
 import torch.nn as nn
 import torchvision.models as models
 from pathlib import Path
 from .extra_functions import validate_checkpoint
+from .hierarchy import Hierarchy
 
 class FocalLoss(nn.Module):
     """
     Focal loss for binary cross-entropy on probability inputs with one-hot targets.
     Applies modulating factor (1 - pt)^gamma to down-weight easy examples.
     """
-    def __init__(self, gamma=2.0):
+    def __init__(self, gamma: float = 2.0) -> None:
         super().__init__()
         self.gamma = gamma
 
-    def forward(self, input, target):
+    def forward(self, input: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """
         input: [N, C], float32 — probabilities (already softmaxed/path-product)
         target: [N, C], float32 — one-hot encoded targets
@@ -27,7 +29,27 @@ class FocalLoss(nn.Module):
         
 
 class Expert(nn.Module):
-    def __init__(self, in_dim, num_children, mode="soft", expert_type="mlp"):
+    """
+    A local classifier (expert) assigned to a single internal node in the hierarchy.
+
+    Each expert learns to route an input feature vector to one of the node's children.
+    Three architectures are supported, selected via expert_type:
+
+    - ``"linear"``: a single Linear(in_dim → num_children) layer.
+    - ``"mlp"``:    two-layer MLP with a 2×in_dim hidden layer and ReLU activation.
+    - ``"cnn"``:    two Conv2d layers (1×1 then 2×2) followed by a LazyLinear output;
+                    expects 4D input (B, C, H, W) rather than a flat vector.
+
+    In **soft** mode (training) the expert returns softmax probabilities over children.
+    In **hard** mode (inference) it returns the argmax child index.
+
+    Attributes:
+        layer       (nn.Sequential): The classifier network.
+        mode        (str):           ``"soft"`` or ``"hard"``.
+        expert_type (str):           One of ``"linear"``, ``"mlp"``, ``"cnn"``.
+    """
+
+    def __init__(self, in_dim: int, num_children: int, mode: str = "soft", expert_type: str = "mlp") -> None:
         super().__init__()
         if expert_type == "linear":
             self.layer = nn.Sequential(nn.Linear(in_dim, num_children))
@@ -49,7 +71,20 @@ class Expert(nn.Module):
         self.mode = mode
         self.expert_type = expert_type
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor):
+        """
+        Run the expert on a batch of feature vectors (or feature maps for CNN).
+
+        Args:
+            x (torch.Tensor): Feature input.
+                              Shape ``(B, in_dim)`` for linear/mlp; ``(B, C, H, W)`` for cnn.
+
+        Returns:
+            tuple:
+                - **weights / indices** — soft probabilities ``(B, num_children)`` in soft mode;
+                  argmax child indices ``(B,)`` in hard mode.
+                - **logits** ``(B, num_children)`` — raw pre-softmax scores.
+        """
         logits = self.layer(x)
         if self.mode == "soft":
             weights = torch.softmax(logits, dim=-1)
@@ -63,10 +98,48 @@ class Expert(nn.Module):
             raise ValueError("mode must be 'soft' or 'hard'")
 
 class HierRouteNet(nn.Module):
-    def __init__(self, hierarchy, label_to_id, weights_directory=None,
-                 checkpoint_dir=None, seed=123, loss_type="bce", focal_gamma=2.0,
-                 backbone="efficientnet_b0", freeze_backbone=False,
-                 expert_type="mlp"):
+    """
+    Hierarchical Mixture-of-Experts classification network.
+
+    One :class:`Expert` is instantiated per internal node of the taxonomy tree.
+    During a forward pass each expert produces soft routing weights over its children;
+    leaf probabilities are obtained by multiplying the conditional weights along every
+    root-to-leaf path (path-product).  At inference time, :meth:`predict` greedily
+    follows the argmax child at each node.
+
+    Supported backbones:
+        - ``"efficientnet_b0"`` — EfficientNet-B0, ImageNet pretrained (5.3 M params).
+        - ``"swin_t"``          — Swin Transformer Tiny, ImageNet pretrained (28.3 M params).
+        - ``"swin_s"``          — Swin Transformer Small, ImageNet pretrained (49.6 M params).
+
+    Attributes:
+        hierarchy         (Hierarchy):    Taxonomy tree used to structure routing.
+        label_to_id       (dict):         Mapping from class name to integer node_id.
+        seed              (int):          Random seed passed at construction.
+        loss_type         (str):          ``"bce"`` or ``"focal"``.
+        backbone_type     (str):          Name of the backbone used.
+        expert_type       (str):          One of ``"linear"``, ``"mlp"``, ``"cnn"``.
+        shared            (nn.Sequential):Backbone feature extractor (without classifier head).
+        pool              (nn.Module):    Global average pooling applied after the backbone.
+        feature_dim       (int):          Number of channels output by the backbone.
+        local_classifiers (nn.ModuleDict):Experts keyed by ``str(node_id)`` for each internal node.
+        leaf_index        (torch.Tensor): Float binary mask of shape ``(num_nodes,)``; 1 at leaf positions.
+        loss              (nn.Module):    Loss module — BCELoss or FocalLoss.
+    """
+
+    def __init__(
+        self,
+        hierarchy: Hierarchy,
+        label_to_id: dict[str, int],
+        weights_directory: str | None = None,
+        checkpoint_dir: str | None = None,
+        seed: int = 123,
+        loss_type: str = "bce",
+        focal_gamma: float = 2.0,
+        backbone: str = "efficientnet_b0",
+        freeze_backbone: bool = False,
+        expert_type: str = "mlp",
+    ) -> None:
         super().__init__()
         self.hierarchy = hierarchy
         self.seed = seed
@@ -117,7 +190,24 @@ class HierRouteNet(nn.Module):
             print(f"Loaded checkpoint: {checkpoint_path}")
 
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor):
+        """
+        Forward pass: extract features, run all experts, compute leaf probabilities.
+
+        Uses soft routing — every expert returns softmax weights, and each leaf's
+        probability is the product of conditional weights along its root-to-leaf path.
+
+        Args:
+            x (torch.Tensor): Input image batch of shape ``(B, 3, H, W)``.
+
+        Returns:
+            tuple:
+                - **logit_tensor** ``(B, num_nodes)`` — path-product probability for every node;
+                  only leaf positions are meaningful (internal nodes equal the cumulative
+                  path probability up to that node).
+                - **node_logits** ``dict[str, Tensor]`` — raw expert logits keyed by
+                  ``str(node_id)`` for each internal node; shape ``(B, num_children)``.
+        """
         # --- Backbone ---
         x = self.shared(x)
         if self.backbone_type.startswith("swin"):
@@ -164,7 +254,7 @@ class HierRouteNet(nn.Module):
         return logit_tensor, node_logits
 
 
-    def predict(self, x):
+    def predict(self, x: torch.Tensor) -> tuple[torch.Tensor, list[list[int]]]:
         """
         Predict class labels by greedily following argmax decisions from root to leaf,
         recording the expert path taken for each sample.
@@ -211,7 +301,22 @@ class HierRouteNet(nn.Module):
         return leaf_ids, paths
 
 
-    def loss_fn(self, logits, targets):
+    def loss_fn(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the masked leaf loss over a batch.
+
+        Loss is evaluated only at leaf node positions (controlled by ``self.leaf_index``),
+        summed per sample, normalised by the number of leaves, then averaged over the batch.
+
+        Args:
+            logits  (torch.Tensor): Path-product probabilities ``(B, num_nodes)``
+                                    from :meth:`forward`.
+            targets (torch.Tensor): One-hot soft labels ``(B, num_nodes)``
+                                    from ``HierImageDataset.collate_fn``.
+
+        Returns:
+            torch.Tensor: Scalar loss value.
+        """
         leaf_index = self.leaf_index.to(logits.device)
         logits = logits.clamp(1e-7, 1 - 1e-7)
         loss = self.loss(logits, targets) * leaf_index

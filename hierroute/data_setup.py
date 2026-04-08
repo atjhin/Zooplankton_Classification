@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import random
 from torch.utils.data import Dataset, Subset, DataLoader, SequentialSampler, WeightedRandomSampler, random_split
@@ -35,6 +37,10 @@ class ImageDataset(Dataset):
         image_resolution (int, optional): Final size (height and width) to resize images to. Defaults to 28.
         image_transforms (callable, optional): Image transformations (e.g., data augmentations) to apply. Defaults to None.
         seed (int, optional): Random seed for reproducibility. Defaults to 666.
+        class_folder_map (dict, optional): Mapping from a logical class name to a list of
+            on-disk folder names.  Use this when a single class spans multiple directories
+            (e.g. ``{'Guinardia': ['Guinardia_delicatula', 'Guinardia_flaccida']}``).
+            Folders are pooled before the per-class cap is applied. Defaults to ``{}``.
 
     Attributes:
         data_directory (str): Path to the dataset root directory.
@@ -47,7 +53,8 @@ class ImageDataset(Dataset):
         labels (list): List of numeric class IDs corresponding to each image.
         image_resolution (int): Size to which each image is resized.
         image_transforms (callable or None): Image transformations applied during training or inference.
-        format_file (str): Format of images files. Default: '.tif' 
+        format_file (str): Format of images files. Default: '.tif'
+        class_folder_map (dict): Mapping from logical class name to disk folder name(s).
     """
 
     def __init__(self, data_directory, data_subdirectories: list = None, class_names: list = None,
@@ -129,17 +136,13 @@ class ImageDataset(Dataset):
         self.image_transforms = image_transforms
         
     
-    def __len__(self):
-
+    def __len__(self) -> int:
         """
         Returns the number of samples in the Dataset.
         """
-
         return len(self.image_paths)
-    
 
-    def __getitem__(self, idx):
-
+    def __getitem__(self, idx: int):
         """
         Returns the image and label of specified sample.
 
@@ -302,8 +305,7 @@ class ImageDataset(Dataset):
         if verbose:
             self.print_image_transforms()
             
-    def print_image_transforms(self):
-
+    def print_image_transforms(self) -> None:
         """
         Prints the ordered image transformations applied to the Dataset.
         """
@@ -377,45 +379,44 @@ class ImageDataset(Dataset):
 
 from collections import Counter
 class HierImageDataset(Dataset):
-    
     """
-    A custom PyTorch Dataset for creating a dataset with hierarchical labels
+    A PyTorch Dataset that wraps an :class:`ImageDataset` and attaches a
+    :class:`Hierarchy` built from an adjacency graph.
 
-    This class handles:
-    - Optional image transforms for data augmentation
+    Each sample returned by ``__getitem__`` contains the image, its one-hot
+    label vector (over all hierarchy nodes), the root-to-leaf path, and per-node
+    supervision targets/masks used by the loss function.
 
     Args:
-        base_dataset (ImageDataset): The original dataset from which the hierarchical dataset will be built. 
-        groups (list): A list of string lists, where each inner list defines how the final nodes are grouped at a given
-                       coarser level. The order of the list is important: the first corresponds to the finest
-                       grouping, and the last to the broadest. 
-        coarse_names (list): A list of string lists, where each inner list defines the names of the groups at a given
-                            coarser level. The order of the list is important: the fist corresponds to the finest grouping
-                            and the last to the broadest. 
-        image_transforms (callable, optional): Image transformations (e.g., data augmentations) to apply. Defaults to None.
+        base_dataset      (ImageDataset):     Source dataset providing image paths and string labels.
+        adjacency_graph   (dict[str, list]):  Parent → children mapping that defines the taxonomy tree.
+                                              Must contain every class name present in ``base_dataset``.
+        levels            (int):              Number of non-root levels in the hierarchy.
+        image_transforms  (callable, optional): Transforms applied to images at load time.
+        leaves_only       (bool):             If True, samples whose label is an internal
+                                              (non-leaf) node are removed after construction.
 
-        
     Attributes:
-        data_directory (str): Path to the dataset root directory (from base_dataset).
-        data_subdirectories (list of str): Subdirectories with additional images (from base_dataset).
-        seed (int): Random seed used for sampling (from base_dataset).
-        class_names (list): List by level with sorted class names included in the dataset.
-        class_sizes (torch.Tensor): List by level with the actual sampled size per class.
-        class_ids (list): List by level with numeric ID for each class (aligned with `class_names`).
-        image_paths (list): List of file paths to all sampled images (from base_dataset).
-        labels (list): List by level with numeric class IDs corresponding to each image.
-        image_resolution (int): Size to which each image is resized (from base_dataset).
-        image_transforms (callable or None): Image transformations applied during training or inference.
-        format_file (str): Format of images files. Default: '.tif (from base_dataset)' 
-        
+        data_directory    (str):        Root directory inherited from ``base_dataset``.
+        data_subdirectories (list):     Subdirectories inherited from ``base_dataset``.
+        seed              (int):        Random seed inherited from ``base_dataset``.
+        image_resolution  (int):        Image resize resolution inherited from ``base_dataset``.
+        image_paths       (list[str]):  File paths to all sampled images.
+        labels            (list[int]):  Integer node_id for each image (leaf node).
+        label_to_ids      (dict):       Mapping from class name (str) to integer node_id.
+        hierarchy         (Hierarchy):  Taxonomy tree built from ``adjacency_graph``.
+        levels            (int):        Number of non-root hierarchy levels.
+        image_transforms  (callable or None): Active image transform pipeline.
     """
        
-    def __init__(self, base_dataset,
-                #  , groups,coarse_names,
-                 adjacency_graph,levels,
-                 image_transforms = None,
-                 leaves_only=False
-        ):
+    def __init__(
+        self,
+        base_dataset: ImageDataset,
+        adjacency_graph: dict[str, list[str]],
+        levels: int,
+        image_transforms=None,
+        leaves_only: bool = False,
+    ) -> None:
         
         self.data_directory = base_dataset.data_directory
         self.data_subdirectories = base_dataset.data_subdirectories
@@ -438,15 +439,29 @@ class HierImageDataset(Dataset):
         if leaves_only:
             self._filter_leaves()
         
-    def __len__(self):
-
+    def __len__(self) -> int:
         """
         Returns the number of samples in the Dataset.
         """
-
         return len(self.image_paths)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> dict:
+        """
+        Load and return a single sample with hierarchical supervision metadata.
+
+        Args:
+            idx (int): Index of the sample to retrieve.
+
+        Returns:
+            dict with keys:
+                - ``"image"``      (Tensor ``(3, H, W)``): Transformed image (3-channel).
+                - ``"label_node"`` (int):                  Integer node_id of the leaf label.
+                - ``"path"``       (list[int]):             Root-to-leaf node_id sequence.
+                - ``"targets"``    (dict[int, int]):        For each internal node on the path,
+                                                            the index of the correct child.
+                - ``"masks"``      (dict[int, list[int]]): For each internal node, a list of
+                                                            ones with length equal to num_children.
+        """
         image = Image.open(self.image_paths[idx]).convert('L')
         if self.image_transforms:
             image = self.image_transforms(image)
@@ -479,7 +494,7 @@ class HierImageDataset(Dataset):
             "masks": masks
         }
     
-    def _build_hierarchy(self, adjacency_graph, label_to_ids):
+    def _build_hierarchy(self, adjacency_graph: dict[str, list[str]], label_to_ids: dict[str, int]) -> Hierarchy:
         """
         Constructs a Hierarchy object from an adjacency graph.
         
@@ -510,7 +525,7 @@ class HierImageDataset(Dataset):
         return hierarchy
     
 
-    def _filter_leaves(self):
+    def _filter_leaves(self) -> None:
         """
         Filters image_paths and labels to only include samples
         whose label corresponds to a leaf node in the hierarchy.
@@ -532,7 +547,25 @@ class HierImageDataset(Dataset):
 
         print(f"[leaves_only] Kept {len(self.image_paths)} samples | Removed {removed} non-leaf samples")
 
-    def collate_fn(self, batch):
+    def collate_fn(self, batch: list) -> dict:
+        """
+        Custom collate function for use with PyTorch DataLoader.
+
+        Converts a list of per-sample dicts (from ``__getitem__``) into a
+        batched dict.  The ``label_node`` field is one-hot encoded over all
+        hierarchy nodes so it can be used directly with :meth:`HierRouteNet.loss_fn`.
+
+        Args:
+            batch (list[dict]): List of dicts returned by ``__getitem__``.
+
+        Returns:
+            dict with keys:
+                - ``"image"``      (Tensor ``(B, 3, H, W)``): Stacked image batch.
+                - ``"label_node"`` (Tensor ``(B, num_nodes)``): One-hot label vectors.
+                - ``"path"``       (list[list[int]]):            Per-sample root-to-leaf paths.
+                - ``"targets"``    (list[dict]):                 Per-sample node supervision targets.
+                - ``"masks"``      (list[dict]):                 Per-sample node supervision masks.
+        """
         image = torch.stack([b["image"] for b in batch])
         label_node = [F.one_hot(torch.tensor(b["label_node"], dtype=torch.long), num_classes=len(self.hierarchy)).float() for b in batch]
         label_node = torch.stack(label_node)
@@ -548,7 +581,7 @@ class HierImageDataset(Dataset):
             "masks": masks
         }
 
-    def print_dataset_details(self):
+    def print_dataset_details(self) -> None:
         """
         Prints the class distribution of the Dataset.
         """
@@ -620,9 +653,11 @@ class HierImageDataset(Dataset):
                     
     
     def split_train_test_val(
-        self, train_prop: float = 0.7, val_prop: float = 0.1, test_prop: float = 0.2
-    ):
-
+        self,
+        train_prop: float = 0.7,
+        val_prop: float = 0.1,
+        test_prop: float = 0.2,
+    ) -> tuple[list[int], list[int], list[int]]:
         """
         Returns indices corresponding to the train, validation and test subsets of the Dataset.
         Uses stratified splitting to ensure minority classes are proportionally represented.

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import random
 import numpy as np
@@ -7,8 +9,21 @@ import matplotlib.patches as mpatches
 import matplotlib.ticker as mticker
 import seaborn as sns
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-def visualize_swin_attention(model, image_tensor, stage=5, overlay=True, label=None, save_path=None):
+if TYPE_CHECKING:
+    from .model import HierRouteNet
+
+def visualize_swin_attention(
+    model: HierRouteNet,
+    image_tensor: torch.Tensor,
+    stage: int = 5,
+    overlay: bool = True,
+    show_input: bool = True,
+    interp: str = 'bilinear',
+    label: str | None = None,
+    save_path: str | None = None,
+) -> plt.Figure:
     """
     Visualizes self-attention maps from a chosen stage of the swin_t backbone.
 
@@ -25,6 +40,12 @@ def visualize_swin_attention(model, image_tensor, stage=5, overlay=True, label=N
         stage:        Index into model.shared (default 5 = stage 3, 4x4 patches).
         overlay:      If True (default), overlays the attention map on the input image.
                       If False, shows the raw attention heatmap without the image.
+        show_input:   If True (default), includes the input image as the first panel.
+                      If False, only the per-block attention maps are shown.
+        interp:       Interpolation mode for upsampling the attention map to input
+                      size. 'bilinear' (default) gives smooth gradients; 'nearest'
+                      gives sharp token blocks — useful for seeing the raw 2×2 or
+                      4×4 token structure at later stages.
         save_path:    Optional path to save the figure (e.g. 'attention.png').
 
     Returns:
@@ -87,36 +108,42 @@ def visualize_swin_attention(model, image_tensor, stage=5, overlay=True, label=N
     if img_np.shape[2] == 1:
         img_np = img_np.squeeze(-1)
 
-    n_cols = n_blocks + 1
+    n_cols = n_blocks + (1 if show_input else 0)
     fig, axes = plt.subplots(1, n_cols, figsize=(3 * n_cols, 3.5))
+    if n_cols == 1:
+        axes = [axes]
     title = f'Swin-T Self-Attention Maps — stage index {stage}'
     if label is not None:
         title += f' — {label}'
     fig.suptitle(title,
                  fontsize=11, fontweight='bold')
 
-    axes[0].imshow(img_np, cmap='gray' if img_np.ndim == 2 else None)
-    axes[0].set_title('Input', fontsize=9)
-    axes[0].axis('off')
+    offset = 0
+    if show_input:
+        axes[0].imshow(img_np, cmap='gray' if img_np.ndim == 2 else None)
+        axes[0].set_title('Input', fontsize=9)
+        axes[0].axis('off')
+        offset = 1
 
     for i, attn_map in enumerate(attn_maps):
+        interp_kwargs = {'align_corners': False} if interp == 'bilinear' else {}
         upsampled = F.interpolate(
             torch.tensor(attn_map).unsqueeze(0).unsqueeze(0).float(),
-            size=image_tensor.shape[-2:], mode='bilinear', align_corners=False
+            size=image_tensor.shape[-2:], mode=interp, **interp_kwargs
         ).squeeze().numpy()
         upsampled = (upsampled - upsampled.min()) / (upsampled.max() - upsampled.min() + 1e-8)
 
         if overlay:
-            axes[i + 1].imshow(img_np, cmap='gray' if img_np.ndim == 2 else None)
-            im = axes[i + 1].imshow(upsampled, cmap='hot', alpha=0.55)
+            axes[i + offset].imshow(img_np, cmap='gray' if img_np.ndim == 2 else None)
+            im = axes[i + offset].imshow(upsampled, cmap='hot', alpha=0.55)
         else:
-            im = axes[i + 1].imshow(upsampled, cmap='hot')
-        axes[i + 1].set_title(f'Block {i}', fontsize=9)
-        axes[i + 1].axis('off')
+            im = axes[i + offset].imshow(upsampled, cmap='hot')
+        axes[i + offset].set_title(f'Block {i}', fontsize=9)
+        axes[i + offset].axis('off')
 
     plt.tight_layout()
 
-    cbar = fig.colorbar(im, ax=axes.tolist(), fraction=0.02, pad=0.02)
+    cbar = fig.colorbar(im, ax=axes, fraction=0.02, pad=0.02)
     cbar.set_label('Attention magnitude', fontsize=8)
     cbar.ax.tick_params(labelsize=7)
 
@@ -127,7 +154,17 @@ def visualize_swin_attention(model, image_tensor, stage=5, overlay=True, label=N
     return fig
 
 
-def visualize_gradcam(model, image_tensor, target_leaf, weights, stage=5, overlay=True, label=None, save_path=None):
+def visualize_gradcam(
+    model: HierRouteNet,
+    image_tensor: torch.Tensor,
+    target_leaf: str,
+    weights: list[float],
+    stage: int = 5,
+    overlay: bool = True,
+    show_input: bool = True,
+    label: str | None = None,
+    save_path: str | None = None,
+) -> plt.Figure:
     """
     Visualizes Grad-CAM from a chosen stage of the swin_t backbone, using a
     weighted sum of log-probabilities along the root-to-leaf hierarchy path as
@@ -144,11 +181,13 @@ def visualize_gradcam(model, image_tensor, target_leaf, weights, stage=5, overla
                       resolution for 64x64 images).
         overlay:      If True (default), overlays the CAM on the input image.
                       If False, shows the raw CAM heatmap without the image.
+        show_input:   If True (default), includes the input image as the first panel.
+                      If False, only the Grad-CAM panel is shown.
         label:        Optional string appended to the figure title.
         save_path:    Optional path to save the figure (e.g. 'gradcam.png').
 
     Returns:
-        fig: matplotlib Figure with two panels (input image + Grad-CAM).
+        fig: matplotlib Figure with one or two panels (input image + Grad-CAM).
     """
     import torch.nn.functional as F
 
@@ -224,27 +263,32 @@ def visualize_gradcam(model, image_tensor, target_leaf, weights, stage=5, overla
             img_np = img_np.squeeze(-1)
 
         # --- 9. Plot ---
-        fig, axes = plt.subplots(1, 2, figsize=(7, 3.5))
+        n_cols = 2 if show_input else 1
+        fig, axes = plt.subplots(1, n_cols, figsize=(3.5 * n_cols, 3.5))
+        if n_cols == 1:
+            axes = [axes]
         title = f'Grad-CAM — stage {stage} — target: {target_leaf}'
         if label is not None:
             title += f' — {label}'
         fig.suptitle(title, fontsize=11, fontweight='bold')
 
-        axes[0].imshow(img_np, cmap='gray' if img_np.ndim == 2 else None)
-        axes[0].set_title('Input', fontsize=9)
-        axes[0].axis('off')
+        if show_input:
+            axes[0].imshow(img_np, cmap='gray' if img_np.ndim == 2 else None)
+            axes[0].set_title('Input', fontsize=9)
+            axes[0].axis('off')
 
+        cam_ax = axes[1] if show_input else axes[0]
         if overlay:
-            axes[1].imshow(img_np, cmap='gray' if img_np.ndim == 2 else None)
-            im = axes[1].imshow(cam_up, cmap='hot', alpha=0.55)
+            cam_ax.imshow(img_np, cmap='gray' if img_np.ndim == 2 else None)
+            im = cam_ax.imshow(cam_up, cmap='hot', alpha=0.55)
         else:
-            im = axes[1].imshow(cam_up, cmap='hot')
-        axes[1].set_title('Grad-CAM', fontsize=9)
-        axes[1].axis('off')
+            im = cam_ax.imshow(cam_up, cmap='hot')
+        cam_ax.set_title('Grad-CAM', fontsize=9)
+        cam_ax.axis('off')
 
         plt.tight_layout()
 
-        cbar = fig.colorbar(im, ax=axes.tolist(), fraction=0.02, pad=0.02)
+        cbar = fig.colorbar(im, ax=axes, fraction=0.02, pad=0.02)
         cbar.set_label('Grad-CAM magnitude', fontsize=8)
         cbar.ax.tick_params(labelsize=7)
 
@@ -259,17 +303,25 @@ def visualize_gradcam(model, image_tensor, target_leaf, weights, stage=5, overla
     return fig
 
 
-def validate_checkpoint(checkpoint_path, model, backbone: str, expert_type: str):
+def validate_checkpoint(checkpoint_path, model, backbone: str, expert_type: str) -> dict:
     """
-    Loads and validates that a checkpoint state dict is compatible with the given model.
-    Raises ValueError with a categorized message on any mismatch.
-    Returns the loaded state dict if compatible.
+    Load a checkpoint and verify it is compatible with the given model.
+
+    Compares keys and parameter shapes between the checkpoint state dict and
+    the model's current state dict.  Raises a :class:`ValueError` with a
+    categorised diagnostic message if any mismatch is found.
 
     Args:
-        checkpoint_path: Path to the .pt checkpoint file.
-        model: The instantiated model to validate against.
-        backbone: Backbone name used to build the model (for error messages).
-        expert_type: Expert type used to build the model (for error messages).
+        checkpoint_path: Path to the ``.pt`` checkpoint file.
+        model:           The instantiated model to validate against.
+        backbone (str):  Backbone name used to build the model (included in error messages).
+        expert_type (str): Expert type used to build the model (included in error messages).
+
+    Returns:
+        dict: The loaded state dict, ready to be passed to ``model.load_state_dict()``.
+
+    Raises:
+        ValueError: If the checkpoint cannot be read or is structurally incompatible.
     """
     try:
         ckpt_state = torch.load(checkpoint_path, map_location="cpu")
@@ -315,15 +367,16 @@ def validate_checkpoint(checkpoint_path, model, backbone: str, expert_type: str)
     raise ValueError("\n".join(lines))
 
 
-def set_seed(seed: int = 666):
-
+def set_seed(seed: int = 666) -> None:
     """
-    Sets the random seed across Python, NumPy, and PyTorch to ensure reproducible results.
+    Set the random seed across Python, NumPy, and PyTorch for reproducibility.
+
+    Fixes seeds for ``random``, ``numpy``, ``torch`` (CPU and all GPUs) and
+    enables ``cudnn.deterministic`` mode.
 
     Args:
-        seed (int, optional): The seed value to use. Defaults to 666.
+        seed (int): Seed value to use. Defaults to 666.
     """
-
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -347,7 +400,7 @@ class Visualize:
     _VAL_COL   = "#DD8452"   # orange — validation
     _METRIC_COLS = ["#4C72B0", "#55A868", "#C44E52", "#8172B2"]  # F1 / Acc / Prec / Rec
 
-    def __init__(self, model_dir):
+    def __init__(self, model_dir: str | Path) -> None:
         self.model_dir = Path(model_dir)
 
         train_path = self.model_dir / "training_info.json"
@@ -367,7 +420,7 @@ class Visualize:
     #  Training curves                                                     #
     # ------------------------------------------------------------------ #
 
-    def plot_train(self, max_epochs: int = None):
+    def plot_train(self, max_epochs: int | None = None) -> None:
         """
         Three side-by-side line charts (Loss / Accuracy / F1),
         one line for train (blue) and one for validation (orange).
@@ -437,7 +490,7 @@ class Visualize:
     #  Prediction results                                                  #
     # ------------------------------------------------------------------ #
 
-    def plot_pred(self):
+    def plot_pred(self) -> None:
         """
         For each hierarchy level:
           1. Confusion matrix — raw counts (left) and normalised / recall (right).
@@ -527,7 +580,7 @@ class Visualize:
         # --- Cross-level overview ---
         self.plot_level_comparison()
 
-    def _plot_class_metrics(self, depth, per_class):
+    def _plot_class_metrics(self, depth: int, per_class: dict) -> None:
         """Grouped bar chart: Acc / F1 / Precision / Recall per class at one level."""
         classes     = sorted(per_class.items(), key=lambda x: x[1]["node_id"])
         class_names = [c[0] for c in classes]
@@ -570,7 +623,7 @@ class Visualize:
         print(f"Saved → {out}")
         plt.show()
 
-    def plot_level_comparison(self):
+    def plot_level_comparison(self) -> None:
         """
         Grouped bar chart comparing overall Acc / F1 / Precision / Recall
         across all hierarchy levels, with value labels on each bar.
@@ -614,7 +667,7 @@ class Visualize:
         print(f"Saved → {out}")
         plt.show()
 
-    def plot_class_size_vs_accuracy(self):
+    def plot_class_size_vs_accuracy(self) -> None:
         """
         Scatter plot: class sample size vs accuracy for every class across all levels.
         Useful for diagnosing whether low accuracy is driven by data imbalance.
